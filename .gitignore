@@ -2,3 +2,6 @@ cmake-build-debug
 Atomic
 Test
 Barrier
+CMakeLists.txt
+Sample Client
+mattanTests

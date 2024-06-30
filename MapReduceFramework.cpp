@@ -6,7 +6,7 @@
 #define SYSTEM_ERROR "system error: "
 
 
-typedef struct {
+struct Job {
     const MapReduceClient& client;
     const InputVec& inputVec;
     OutputVec& outputVec;
@@ -21,9 +21,21 @@ typedef struct {
     std::vector<IntermediateVec>* afterShuffle;
     pthread_mutex_t mutex;
     Barrier* barrier;
-    bool thread_join = false;
-} Job;
+    bool thread_join;
 
+    Job(const MapReduceClient& client, const InputVec& inputVec, OutputVec& outputVec,
+        int ThreadLevel, JobState* State, pthread_t* all_threads, int total_elements,
+        std::vector<IntermediateVec>* beforeShuffle, std::vector<IntermediateVec>* afterShuffle,
+        pthread_mutex_t mutex, Barrier* barrier)
+        : client(client), inputVec(inputVec), outputVec(outputVec), ThreadLevel(ThreadLevel), State(State),
+          all_threads(all_threads), atomic_total_elements(total_elements), atomic_next_to_process(0),
+          atomic_stage(UNDEFINED_STAGE), atomic_finished_counter(0), beforeShuffle(beforeShuffle),
+          afterShuffle(afterShuffle), mutex(mutex), barrier(barrier), thread_join(false)
+    {}
+};
+
+
+typedef struct Job Job;
 
 typedef struct {
     const int id;
@@ -47,33 +59,33 @@ bool sort_helper(const IntermediatePair &a, const IntermediatePair &b)
 void sort_phase(ThreadContext *thread_context)
 {
   IntermediateVec* curr_intermediate = thread_context->intermediateVec;
-  std::sort (curr_intermediate->begin(), curr_intermediate->end(),sort_helper);
-  if(pthread_mutex_lock (&thread_context->job->mutex))
+  std::sort (curr_intermediate->begin (), curr_intermediate->end (), sort_helper);
+  if (pthread_mutex_lock (&thread_context->job->mutex))
   {
-    std::cerr << SYSTEM_ERROR "mutex lock failed\n"<< std::endl;
-    exit(1);
+    std::cerr << SYSTEM_ERROR "mutex lock failed\n" << std::endl;
+    exit (1);
   }
-  thread_context->job->beforeShuffle->push_back(*curr_intermediate);
-  if(pthread_mutex_unlock (&thread_context->job->mutex))
+  thread_context->job->beforeShuffle->push_back (*curr_intermediate);
+  if (pthread_mutex_unlock (&thread_context->job->mutex))
   {
-    std::cerr << SYSTEM_ERROR "mutex unlock failed\n"<< std::endl;
-    exit(1);
+    std::cerr << SYSTEM_ERROR "mutex unlock failed\n" << std::endl;
+    exit (1);
   }
-
 }
 
 
 void map_phase(ThreadContext *thread_context)
 {
   Job *j = thread_context->job;
-  while (j ->atomic_next_to_process.load () < j->atomic_total_elements.load ())
+  while (j->atomic_next_to_process.load () < j->atomic_total_elements.load ())
   {
     int old_val = j->atomic_next_to_process.fetch_add (1);
-    std::pair<K1*,V1*> pair =  j->inputVec.at(old_val);
-    j->client.map(pair.first, pair.second, thread_context);
-    j->atomic_finished_counter++;
+    std::pair<K1 *, V1 *> pair = j->inputVec.at (old_val);
+    j->client.map (pair.first, pair.second, thread_context);
+//    j->atomic_finished_counter.fetch_add(1);
   }
-  sort_phase (thread_context);
+  sort_phase(thread_context);
+  j->atomic_finished_counter.fetch_add(1);
 }
 
 
@@ -108,19 +120,27 @@ K2* max_key(Job* j) {
 
 void shuffle_phase(Job* job)
 {
+  IntermediatePair curr;
   K2* maxKey = max_key(job);
   while(maxKey)
   {
     IntermediateVec* temp = new IntermediateVec;
     for (auto& vec : *job->beforeShuffle)
     {
-      IntermediatePair curr = vec.back();
+      if (!vec.empty())
+      {
+        curr = vec.back();
+      }
       while (!vec.empty() && !(*curr.first < *maxKey || *maxKey < *curr.first))
       {
         temp->push_back(vec.back());
         vec.pop_back();
-        job->atomic_finished_counter++;
-        curr = vec.back();
+        job->atomic_finished_counter.fetch_add (1);
+
+        if (!vec.empty())
+        {
+          curr = vec.back();
+        }
       }
     }
     job->afterShuffle->push_back(*temp);
@@ -136,7 +156,7 @@ void reduce_phase(ThreadContext *thread_context){
     int old_val = j->atomic_next_to_process.fetch_add(1);
     IntermediateVec pair = j->afterShuffle->at(old_val);
     j->client.reduce(&pair, thread_context);
-    j->atomic_finished_counter++;
+    j->atomic_finished_counter.fetch_add (1);
   }
 }
 
@@ -152,10 +172,7 @@ size_t count_elements(Job* j, stage_t state){
   }
 
   if(state == REDUCE_STAGE){
-    for (auto& vec : *j->afterShuffle)
-    {
-      count+=1;
-    }
+    count = j->afterShuffle->size();
   }
 
   return count;
@@ -235,24 +252,30 @@ void emit3 (K3* key, V3* value, void* context)
 JobContext* create_job(const MapReduceClient& client,const InputVec& inputVec,
                         OutputVec& outputVec,int multiThreadLevel)
 {
-  Job *job = new Job{
-        .client =  client,
-        .inputVec =  inputVec,
-        .outputVec =  outputVec,
-        .ThreadLevel = multiThreadLevel,
-        .State = new JobState{UNDEFINED_STAGE,0},
-        .all_threads = new pthread_t[multiThreadLevel],
-        .beforeShuffle = new std::vector<IntermediateVec>,
-        .afterShuffle = new std::vector<IntermediateVec>
-      };
-
-  job->barrier = new Barrier (multiThreadLevel);
-  job->atomic_total_elements = job->inputVec.size();
-  job->atomic_next_to_process = 0;
-  if(pthread_mutex_init(&job->mutex, nullptr)){
+  pthread_mutex_t mutex;
+  if(pthread_mutex_init(&mutex, nullptr))
+  {
     std::cerr << SYSTEM_ERROR "create mutex failed\n"<< std::endl;
     exit(1);
-  };
+  }
+
+  Job* job = new Job(
+      client,
+      inputVec,
+      outputVec,
+      multiThreadLevel,
+      new JobState{UNDEFINED_STAGE, 0},
+      new pthread_t[multiThreadLevel],
+      inputVec.size(),
+      new std::vector<IntermediateVec>,
+      new std::vector<IntermediateVec>,
+      mutex,
+      new Barrier(multiThreadLevel)
+  );
+
+  job->atomic_total_elements = job->inputVec.size();
+  job->atomic_next_to_process = 0;
+
   ThreadContext** thread_contexts= new ThreadContext*[multiThreadLevel];
 
   for(int i = 0; i < multiThreadLevel ; i++)
@@ -280,7 +303,7 @@ void getJobState(JobHandle job, JobState* state)
 {
   JobContext* job_Context = ((JobContext*) job);
   Job  *j = job_Context->job;
-  j -> State ->percentage = (j->atomic_finished_counter.load() / j->atomic_total_elements.load()) * 100.0f;
+  j->State->percentage = (static_cast<float>(j->atomic_finished_counter.load()) / j->atomic_total_elements.load()) * 100.0f;
   j -> State ->stage = static_cast<stage_t> (j->atomic_stage.load());
   if (j->State->stage == UNDEFINED_STAGE)
   {
@@ -289,7 +312,6 @@ void getJobState(JobHandle job, JobState* state)
 
   *state = *(j->State);
 }
-
 
 
 void waitForJob(JobHandle job)
