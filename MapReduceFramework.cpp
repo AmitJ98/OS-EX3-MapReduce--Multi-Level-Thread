@@ -3,6 +3,7 @@
 #include <pthread.h>
 #include <algorithm>
 #include <iostream>
+#include <atomic>
 
 #define SYSTEM_ERROR "system error: "
 #define STAGE_LOCATION << 62
