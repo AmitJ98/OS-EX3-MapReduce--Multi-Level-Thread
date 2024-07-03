@@ -12,10 +12,11 @@
 #define GET_TOTAL_BITS >> 31 & (0x7fffffff)
 #define GET_COUNT_BITS & (0x7fffffff)
 
-// exit(1)
-// emit2 and emit3
-//% calculation
 
+
+// emit2 and emit3
+
+struct ThreadContext;
 
 struct Job {
     const MapReduceClient& client;
@@ -45,17 +46,22 @@ struct Job {
 
 typedef struct Job Job;
 
-typedef struct {
+struct ThreadContext {
     const int id;
     Job* job;
     IntermediateVec* intermediateVec;
-}ThreadContext;
+};
+
+typedef struct ThreadContext ThreadContext;
 
 
-typedef struct {
-    ThreadContext** thread_context;
-    Job* job;
-}JobContext;
+//typedef struct {
+//    ThreadContext** thread_context;
+//    Job* job;
+//}JobContext;
+
+
+
 
 
 
@@ -101,7 +107,7 @@ void sort_phase(ThreadContext *thread_context)
 
   thread_context->job->beforeShuffle->push_back (*curr_intermediate);
 
-  unlock_mutex (&thread_context->job->mutex);
+  unlock_mutex (&thread_context->job->mutex , thread_context->job);
 }
 
 
@@ -197,9 +203,9 @@ void reduce_phase(ThreadContext *thread_context)
     {
       break;
     }
-    IntermediateVec* pair = j->afterShuffle->at(old_val);
-    j->client.reduce(pair, thread_context);
-    x = thread_context->job->atomic_state.fetch_add(1);
+    IntermediateVec* vec = j->afterShuffle->at(old_val);
+    j->client.reduce(vec, thread_context);
+    x = thread_context->job->atomic_state.fetch_add(vec->size());
   }
 }
 
@@ -217,7 +223,10 @@ size_t count_elements(Job* j, stage_t state)
 
   if(state == REDUCE_STAGE)
   {
-    count = j->afterShuffle->size();
+    for (auto& vec : *j->afterShuffle)
+    {
+      count += vec->size();
+    }
   }
   return count;
 }
@@ -261,14 +270,14 @@ void emit3 (K3* key, V3* value, void* context)
 {
   ThreadContext* thread_context = (ThreadContext*)context;
   Job *job = thread_context->job;
-  lock_mutex (&job->mutex);
+  lock_mutex (&job->mutex, job);
   job->outputVec.push_back({key,value});
-  unlock_mutex (&job->mutex);
+  unlock_mutex (&job->mutex, job);
 
 }
 
 
-JobContext* create_job(const MapReduceClient& client,const InputVec& inputVec,
+Job* create_job(const MapReduceClient& client,const InputVec& inputVec,
                        OutputVec& outputVec,int multiThreadLevel)
 {
 
@@ -281,16 +290,15 @@ JobContext* create_job(const MapReduceClient& client,const InputVec& inputVec,
       new pthread_t[multiThreadLevel],
       new std::vector<IntermediateVec>,
       new std::vector<IntermediateVec*>,
-      new Barrier(multiThreadLevel)
+      new Barrier(multiThreadLevel),
+      new ThreadContext*[multiThreadLevel]
   );
-
   if (pthread_mutex_init (&job->mutex, nullptr)!=0)
   {
     std::cout << SYSTEM_ERROR "mutex creation failed" << std::endl;
     exit (1);
   }
 
-  ThreadContext** thread_contexts= new ThreadContext*[multiThreadLevel];
   reset_counter (job, MAP_STAGE, job->inputVec.size ());
 
 
@@ -341,12 +349,13 @@ void waitForJob(JobHandle job)
   {
     return;
   }
-  job_Context->job->thread_join = true;
-  for (int i=0;i<job_Context->job->ThreadLevel;i++)
+  j->thread_join = true;
+  for (int i=0;i< j->ThreadLevel;i++)
   {
     if(pthread_join(job_Context->job->all_threads[i], nullptr))
     {
       std::cout << SYSTEM_ERROR "mutex join failed"<< std::endl;
+      free_resources (j);
       exit(1);
     }
   }
@@ -356,55 +365,6 @@ void waitForJob(JobHandle job)
 void closeJobHandle(JobHandle job)
 {
   waitForJob(job);
-  JobContext* job_Context = ((JobContext*) job);
-  Job* j = job_Context->job;
-
-  if(pthread_mutex_destroy(&j->mutex)!=0)
-  {
-    std::cout <<SYSTEM_ERROR "mutex failed to destroy" << std::endl;
-    exit(1);
-  }
-
-  if (job_Context->thread_context != nullptr)
-  {
-    for (int i = 0; i < j->ThreadLevel; i++)
-    {
-      if (job_Context->thread_context[i] != nullptr)
-      {
-        delete job_Context->thread_context[i]->intermediateVec;
-        delete job_Context->thread_context[i];
-      }
-    }
-    delete[] job_Context->thread_context;
-  }
-
-
-  if (j->beforeShuffle != nullptr)
-  {
-    for (auto& vec : *j->beforeShuffle)
-    {
-      vec.clear();
-    }
-    j->beforeShuffle->clear();
-    delete j->beforeShuffle;
-  }
-
-
-  if (j->afterShuffle != nullptr)
-  {
-    for (auto& vec : *j->afterShuffle)
-    {
-      vec->clear();
-      delete vec;
-    }
-    j->afterShuffle->clear();
-    delete j->afterShuffle;
-  }
-
-  delete j->State;
-  delete j->barrier;
-  delete[] j->all_threads;
-
-  delete j;
-  delete job_Context;
+  Job* j = ((Job*) job);
+  free_resources (j);
 }
