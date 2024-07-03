@@ -11,7 +11,9 @@
 #define GET_TOTAL_BITS >> 31 & (0x7fffffff)
 #define GET_COUNT_BITS & (0x7fffffff)
 
-//TODO 1) check exit(1) ,  4)calculate precentge
+// exit(1)
+// emit2 and emit3
+//% calculation
 
 
 struct Job {
