@@ -1,6 +1,5 @@
 #ifndef MAPREDUCEFRAMEWORK_H
 #define MAPREDUCEFRAMEWORK_H
-#include "Barrier/Barrier.h"
 #include "MapReduceClient.h"
 #include <atomic>
 

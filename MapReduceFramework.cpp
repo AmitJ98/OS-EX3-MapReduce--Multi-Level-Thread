@@ -1,4 +1,5 @@
 #include "MapReduceFramework.h"
+#include "Barrier.h"
 #include <pthread.h>
 #include <algorithm>
 #include <iostream>
@@ -10,7 +11,7 @@
 #define GET_TOTAL_BITS >> 31 & (0x7fffffff)
 #define GET_COUNT_BITS & (0x7fffffff)
 
-//TODO 1) check exit(1) , 2) shuffle progress
+//TODO 1) check exit(1) ,  4)calculate precentge
 
 
 struct Job {
@@ -207,7 +208,7 @@ size_t count_elements(Job* j, stage_t state)
   {
     for (auto& vec : *j->beforeShuffle)
     {
-      count+=vec.size();
+      count += vec.size();
     }
   }
 
@@ -215,7 +216,6 @@ size_t count_elements(Job* j, stage_t state)
   {
     count = j->afterShuffle->size();
   }
-
   return count;
 }
 
@@ -362,7 +362,6 @@ void closeJobHandle(JobHandle job)
     exit(1);
   }
 
-  // Delete thread contexts and their intermediate vectors
   if (job_Context->thread_context != nullptr)
   {
     for (int i = 0; i < j->ThreadLevel; i++)
@@ -376,8 +375,6 @@ void closeJobHandle(JobHandle job)
     delete[] job_Context->thread_context;
   }
 
-
-  delete j->State;
 
   if (j->beforeShuffle != nullptr)
   {
@@ -401,28 +398,10 @@ void closeJobHandle(JobHandle job)
     delete j->afterShuffle;
   }
 
-  // Delete barrier
+  delete j->State;
   delete j->barrier;
-
-  // Delete all_threads array
   delete[] j->all_threads;
 
-  // Delete the Job struct itself
   delete j;
   delete job_Context;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
