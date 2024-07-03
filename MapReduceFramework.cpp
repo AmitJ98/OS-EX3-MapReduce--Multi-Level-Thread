@@ -55,11 +55,6 @@ struct ThreadContext {
 typedef struct ThreadContext ThreadContext;
 
 
-//typedef struct {
-//    ThreadContext** thread_context;
-//    Job* job;
-//}JobContext;
-
 
 
 
