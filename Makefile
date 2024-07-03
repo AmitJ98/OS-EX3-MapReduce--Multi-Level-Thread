@@ -24,7 +24,7 @@ $(LIB): $(OBJ)
 
 # Create tar archive of the project
 tar:
-	tar -cvf project.tar $(SRC) Barrier.h Makefile README
+	tar -cvf ex3.tar $(SRC) Barrier.h Makefile README
 
 # Clean up object files and library
 clean:
