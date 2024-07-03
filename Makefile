@@ -2,7 +2,7 @@ CXX = g++
 
 CXXFLAGS = -Wall -std=c++11
 
-SRC = Barrier/Barrier.cpp MapReduceFramework.cpp 
+SRC = Barrier.cpp MapReduceFramework.cpp
     
 OBJ = $(SRC:.cpp=.o)
 
