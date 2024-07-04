@@ -5,7 +5,8 @@ EX: 3
 
 FILES:
 MapReduceFramework.cpp - the implementation of the map reduce framework
-Barrier.cpp - the implementation of the Barrier class that the framework uses to transition from phase to another (the course implementation)
+Barrier.cpp - the implementation of the Barrier class that the framework uses to transition from phase to another
+		 (the course implementation)
 Barrier.h - header file of Barrier
 Makefile
 README

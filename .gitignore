@@ -5,3 +5,5 @@ Barrier
 CMakeLists.txt
 Sample_Client
 mattanTests
+.vscode
+.idea
