@@ -14,8 +14,6 @@
 
 
 
-// emit2 and emit3
-
 struct ThreadContext;
 
 struct Job {
@@ -32,15 +30,16 @@ struct Job {
     pthread_mutex_t mutex;
     Barrier* barrier;
     bool thread_join;
+    ThreadContext** thread_contexts;
 
     Job(const MapReduceClient& client, const InputVec& inputVec, OutputVec& outputVec,
         int ThreadLevel, JobState* State, pthread_t* all_threads,
         std::vector<IntermediateVec>* beforeShuffle, std::vector<IntermediateVec*>* afterShuffle,
-        Barrier* barrier):
+        Barrier* barrier, ThreadContext** thread_context):
         client(client), inputVec(inputVec), outputVec(outputVec), ThreadLevel(ThreadLevel), State(State),
         all_threads(all_threads), atomic_next_to_process(0),
         beforeShuffle(beforeShuffle), afterShuffle(afterShuffle),barrier(barrier),
-        thread_join(false)
+        thread_join(false), thread_contexts(thread_context)
     {}
 };
 
@@ -55,26 +54,83 @@ struct ThreadContext {
 typedef struct ThreadContext ThreadContext;
 
 
-
-
-
-
-
-void lock_mutex(pthread_mutex_t *mutex)
+void free_resources(Job* j, bool pass)
 {
-  if (pthread_mutex_lock (mutex)!=0)
+  bool flag = false;
+  if(pass == false)
   {
-    std::cout<< SYSTEM_ERROR "mutex lock failed" <<std::endl;
+    if (pthread_mutex_destroy (&j->mutex) != 0)
+    {
+      std::cout << SYSTEM_ERROR "mutex failed to destroy" << std::endl;
+      flag = true;
+    }
+  }
+
+  if (j->thread_contexts != nullptr)
+  {
+    for (int i = 0; i < j->ThreadLevel; i++)
+    {
+      if (j->thread_contexts[i] != nullptr)
+      {
+        delete j->thread_contexts[i]->intermediateVec;
+        delete j->thread_contexts[i];
+      }
+    }
+    delete[] j->thread_contexts;
+  }
+
+
+  if (j->beforeShuffle != nullptr)
+  {
+    for (auto& vec : *j->beforeShuffle)
+    {
+      vec.clear();
+    }
+    j->beforeShuffle->clear();
+    delete j->beforeShuffle;
+  }
+
+
+  if (j->afterShuffle != nullptr)
+  {
+    for (auto& vec : *j->afterShuffle)
+    {
+      vec->clear();
+      delete vec;
+    }
+    j->afterShuffle->clear();
+    delete j->afterShuffle;
+  }
+
+  delete j->State;
+  delete j->barrier;
+  delete[] j->all_threads;
+
+  delete j;
+  if (flag)
+  {
     exit(1);
   }
 }
 
 
-void unlock_mutex(pthread_mutex_t *mutex)
+void lock_mutex(pthread_mutex_t *mutex, Job* j)
+{
+  if (pthread_mutex_lock (mutex)!=0)
+  {
+    std::cout<< SYSTEM_ERROR "mutex lock failed" <<std::endl;
+    free_resources(j, false);
+    exit(1);
+  }
+}
+
+
+void unlock_mutex(pthread_mutex_t *mutex, Job* j)
 {
   if (pthread_mutex_unlock (mutex)!=0)
   {
     std::cout<< SYSTEM_ERROR "mutex lock failed" <<std::endl;
+    free_resources(j, false);
     exit(1);
   }
 }
@@ -98,7 +154,7 @@ void sort_phase(ThreadContext *thread_context)
   IntermediateVec* curr_intermediate = thread_context->intermediateVec;
   std::sort (curr_intermediate->begin (), curr_intermediate->end (), sort_helper);
 
-  lock_mutex (&thread_context->job->mutex);
+  lock_mutex (&thread_context->job->mutex, thread_context->job);
 
   thread_context->job->beforeShuffle->push_back (*curr_intermediate);
 
@@ -273,7 +329,7 @@ void emit3 (K3* key, V3* value, void* context)
 
 
 Job* create_job(const MapReduceClient& client,const InputVec& inputVec,
-                       OutputVec& outputVec,int multiThreadLevel)
+                OutputVec& outputVec,int multiThreadLevel)
 {
 
   Job* job = new Job(
@@ -291,7 +347,8 @@ Job* create_job(const MapReduceClient& client,const InputVec& inputVec,
   if (pthread_mutex_init (&job->mutex, nullptr)!=0)
   {
     std::cout << SYSTEM_ERROR "mutex creation failed" << std::endl;
-    exit (1);
+    free_resources(job, true);
+    exit(1);
   }
 
   reset_counter (job, MAP_STAGE, job->inputVec.size ());
@@ -300,16 +357,16 @@ Job* create_job(const MapReduceClient& client,const InputVec& inputVec,
   for(int i = 0; i < multiThreadLevel ; i++)
   {
     auto* contextThread = new ThreadContext{i,job,new IntermediateVec};
-    thread_contexts[i] = contextThread;
+    job->thread_contexts[i] = contextThread;
     if(pthread_create(job->all_threads + i, nullptr, thread_flow,contextThread))
     {
       std::cout << SYSTEM_ERROR "create thread failed\n"<< std::endl;
+      free_resources(job, false);
       exit(1);
     }
   }
 
-  JobContext* job_context = new JobContext {thread_contexts,job};
-  return job_context;
+  return job;
 }
 
 
@@ -322,8 +379,7 @@ JobHandle startMapReduceJob(const MapReduceClient& client,const InputVec& inputV
 
 void getJobState(JobHandle job, JobState* state)
 {
-  JobContext* job_Context = ((JobContext*) job);
-  Job  *j = job_Context->job;
+  Job* j = ((Job*) job);
 
   uint64_t x = j->atomic_state.load();
   auto finished = x GET_COUNT_BITS;
@@ -339,18 +395,18 @@ void getJobState(JobHandle job, JobState* state)
 
 void waitForJob(JobHandle job)
 {
-  JobContext* job_Context = ((JobContext*) job);
-  if (job_Context->job->thread_join == true)
+  Job* j = ((Job*) job);
+  if (j->thread_join == true)
   {
     return;
   }
   j->thread_join = true;
   for (int i=0;i< j->ThreadLevel;i++)
   {
-    if(pthread_join(job_Context->job->all_threads[i], nullptr))
+    if(pthread_join(j-> all_threads[i], nullptr))
     {
       std::cout << SYSTEM_ERROR "mutex join failed"<< std::endl;
-      free_resources (j);
+      free_resources (j, false);
       exit(1);
     }
   }
@@ -361,5 +417,5 @@ void closeJobHandle(JobHandle job)
 {
   waitForJob(job);
   Job* j = ((Job*) job);
-  free_resources (j);
+  free_resources (j, false);
 }
